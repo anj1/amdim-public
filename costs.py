@@ -153,7 +153,7 @@ class LossMultiNCE(nn.Module):
         for i in range(5):
             for j in range(5):
                 masks_r5[i, j, 0, i, j] = 1
-        masks_r5 = torch.tensor(masks_r5).type(torch.uint8)
+        masks_r5 = torch.tensor(masks_r5).type(torch.bool)
         masks_r5 = masks_r5.reshape(-1, 1, 5, 5)
         self.masks_r5 = nn.Parameter(masks_r5, requires_grad=False)
 
