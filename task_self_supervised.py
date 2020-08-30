@@ -15,14 +15,20 @@ from costs import loss_xent
 
 
 def _train(model, optim_inf, scheduler_inf, checkpointer, epochs,
-           train_loader, test_loader, stat_tracker, log_dir, device):
+           train_loader, test_loader, stat_tracker, log_dir, device, amp):
     '''
     Training loop for optimizing encoder
     '''
     # If mixed precision is on, will add the necessary hooks into the model
     # and optimizer for half() conversions
-    model, optim_inf = mixed_precision.initialize(model, optim_inf)
-    optim_raw = mixed_precision.get_optimizer(optim_inf)
+    
+    optim_raw = optim_inf
+    if amp == "apex":
+        model, optim_inf = mixed_precision.initialize(model, optim_inf)
+        optim_raw = mixed_precision.get_optimizer(optim_inf)
+    elif amp == "torch":
+        scaler = torch.cuda.amp.GradScaler()
+
     # get target LR for LR warmup -- assume same LR for all param groups
     for pg in optim_raw.param_groups:
         lr_real = pg['lr']
@@ -40,12 +46,20 @@ def _train(model, optim_inf, scheduler_inf, checkpointer, epochs,
         time_start = time.time()
 
         for _, ((images1, images2), labels) in enumerate(train_loader):
+            optim_inf.zero_grad()
+
             # get data and info about this minibatch
             labels = torch.cat([labels, labels]).to(device)
             images1 = images1.to(device)
             images2 = images2.to(device)
-            # run forward pass through model to get global and local features
-            res_dict = model(x1=images1, x2=images2, class_only=False)
+
+            if amp == "torch":
+                with torch.cuda.amp.autocast():
+                    # run forward pass through model to get global and local features
+                    res_dict = model(x1=images1, x2=images2, class_only=False)
+            else: 
+                res_dict = model(x1=images1, x2=images2, class_only=False)
+
             lgt_glb_mlp, lgt_glb_lin = res_dict['class']
             # compute costs for all self-supervised tasks
             loss_g2l = (res_dict['g2l_1t5'] +
@@ -65,9 +79,14 @@ def _train(model, optim_inf, scheduler_inf, checkpointer, epochs,
 
             # reset gradient accumlators and do backprop
             loss_opt = loss_inf + loss_cls
-            optim_inf.zero_grad()
-            mixed_precision.backward(loss_opt, optim_inf)  # backwards with fp32/fp16 awareness
-            optim_inf.step()
+
+            if amp == "torch":
+                scaler.scale(loss_opt).backward()
+                scaler.step(optim_inf)
+                scaler.update()
+            else:
+                mixed_precision.backward(loss_opt, optim_inf)  # backwards with fp32/fp16 awareness
+                optim_inf.step()
 
             # record loss and accuracy on minibatch
             epoch_stats.update_dict({
@@ -117,7 +136,7 @@ def _train(model, optim_inf, scheduler_inf, checkpointer, epochs,
 
 
 def train_self_supervised(model, learning_rate, dataset, train_loader,
-                          test_loader, stat_tracker, checkpointer, log_dir, device):
+                          test_loader, stat_tracker, checkpointer, log_dir, device, amp):
     # configure optimizer
     mods_inf = [m for m in model.info_modules]
     mods_cls = [m for m in model.class_modules]
@@ -136,4 +155,4 @@ def train_self_supervised(model, learning_rate, dataset, train_loader,
         epochs = 50
     # train the model
     _train(model, optimizer, scheduler, checkpointer, epochs,
-           train_loader, test_loader, stat_tracker, log_dir, device)
+           train_loader, test_loader, stat_tracker, log_dir, device, amp)

@@ -21,7 +21,9 @@ parser.add_argument('--learning_rate', type=float, default=0.0002,
 parser.add_argument('--seed', type=int, default=1,
                     help='random seed (default: 1)')
 parser.add_argument('--amp', action='store_true', default=False,
-                    help='Enables automatic mixed precision')
+                    help='Enables automatic mixed precision via torch.cuda.amp (pytorch>=1.6.0)')
+parser.add_argument('--apex', action='store_true', default=False,
+                    help='Enables automatic mixed precision via nvidia/apex')
 
 # parameters for model and training objective
 parser.add_argument('--classifiers', action='store_true', default=False,
@@ -58,9 +60,17 @@ def main():
         os.mkdir(args.output_dir)
 
     # enable mixed-precision computation if desired
+    amp = ""
     if args.amp:
-        mixed_precision.enable_mixed_precision()
+        amp = "torch"
+        if args.apex:
+            print("Error: Cannot use both --amp and --apex.")
+            exit() 
 
+    if args.apex:
+        amp = "apex"
+        mixed_precision.enable_mixed_precision()
+    
     # set the RNG seeds (probably more hidden elsewhere...)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -100,7 +110,7 @@ def main():
     # select which type of training to do
     task = train_classifiers if args.classifiers else train_self_supervised
     task(model, args.learning_rate, dataset, train_loader,
-         test_loader, stat_tracker, checkpointer, args.output_dir, torch_device)
+         test_loader, stat_tracker, checkpointer, args.output_dir, torch_device, amp)
 
 
 if __name__ == "__main__":

@@ -2,20 +2,27 @@
 
 import torch
 
-from apex.fp16_utils import FP16_Optimizer
-
 MP_CONFIG = {
+    'have_apex': False,
     'enabled': False,
     'optimization_level': 'O2'
 }
 
+try:
+    from apex.fp16_utils import FP16_Optimizer
+    MP_CONFIG['have_apex'] = True
+except:
+    print("nvidia/apex not found; mixed-precision via --apex will be disabled.")
+    FP16_Optimizer = None
 
 def enable_mixed_precision():
-    MP_CONFIG['enabled'] = True
-
+    if MP_CONFIG['have_apex']:
+        MP_CONFIG['enabled'] = True
+    else:
+        raise RuntimeError()
 
 def is_mixed_precision():
-    return MP_CONFIG['enabled']
+    return MP_CONFIG['have_apex'] and MP_CONFIG['enabled']
 
 
 def get_optim_level():
@@ -23,6 +30,9 @@ def get_optim_level():
 
 
 def get_optimizer(obj):
+    if not MP_CONFIG['have_apex']:
+        raise RuntimeError()
+
     '''
     Apex introduces the FP16_optimizer object.
     However this isn't really an optimizer, but only a wrapper around one.
@@ -36,6 +46,9 @@ def get_optimizer(obj):
 
 
 def set_optim_level(opt_level):
+    if not MP_CONFIG['have_apex']:
+        raise RuntimeError()
+
     """Defines the optimization level that will be used by AMP
     See: https://nvidia.github.io/apex/amp.html#opt-levels
 
@@ -58,6 +71,8 @@ def maybe_half(tensor):
 
 
 def initialize(model, optimizers):
+    if not MP_CONFIG['have_apex']:
+        raise RuntimeError()
     """Initialize mixed precision
 
     Arguments:
@@ -78,6 +93,8 @@ def initialize(model, optimizers):
 
 
 def backward(loss, optimizer):
+    if not MP_CONFIG['have_apex']:
+        raise RuntimeError()
     """Calls backward on the loss. If mixed precision is on, will
     scale the loss.
     """

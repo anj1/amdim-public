@@ -16,14 +16,18 @@ from costs import loss_xent
 
 
 def _train(model, optimizer, scheduler, checkpointer, epochs, train_loader,
-           test_loader, stat_tracker, log_dir, device):
+           test_loader, stat_tracker, log_dir, device, amp):
     '''
     Training loop to train classifiers on top of an encoder with fixed weights.
     -- e.g., use this for eval or running on new data
     '''
     # If mixed precision is on, will add the necessary hooks into the model and
     # optimizer for half precision conversions
-    model, optimizer = mixed_precision.initialize(model, optimizer)
+    if amp == "apex":
+        model, optimizer = mixed_precision.initialize(model, optimizer)
+    elif amp == "torch":
+        scaler = torch.cuda.amp.GradScaler()
+        
     # ...
     time_start = time.time()
     total_updates = 0
@@ -32,20 +36,39 @@ def _train(model, optimizer, scheduler, checkpointer, epochs, train_loader,
         epoch_updates = 0
         epoch_stats = AverageMeterSet()
         for _, ((images1, images2), labels) in enumerate(train_loader):
+            optimizer.zero_grad()
+
             # get data and info about this minibatch
             images1 = images1.to(device)
             images2 = images2.to(device)
             labels = labels.to(device)
+
             # run forward pass through model and collect activations
-            res_dict = model(x1=images1, x2=images2, class_only=True)
-            lgt_glb_mlp, lgt_glb_lin = res_dict['class']
-            # compute total loss for optimization
-            loss = (loss_xent(lgt_glb_mlp, labels) +
+            if amp == "torch":
+                with torch.cuda.amp.autocast():
+                    res_dict = model(x1=images1, x2=images2, class_only=True)
+                    lgt_glb_mlp, lgt_glb_lin = res_dict['class']
+
+                    # compute total loss for optimization
+                    loss = (loss_xent(lgt_glb_mlp, labels) +
+                        loss_xent(lgt_glb_lin, labels))
+
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                res_dict = model(x1=images1, x2=images2, class_only=True)
+                lgt_glb_mlp, lgt_glb_lin = res_dict['class']
+
+                # compute total loss for optimization
+                loss = (loss_xent(lgt_glb_mlp, labels) +
                     loss_xent(lgt_glb_lin, labels))
-            # do optimizer step for encoder
-            optimizer.zero_grad()
-            mixed_precision.backward(loss, optimizer)  # special mixed precision stuff
-            optimizer.step()
+
+                # do optimizer step for encoder
+                mixed_precision.backward(loss, optimizer)  # special mixed precision stuff
+                optimizer.step()
+
+
             # record loss and accuracy on minibatch
             epoch_stats.update('loss', loss.item(), n=1)
             update_train_accuracies(epoch_stats, labels, lgt_glb_mlp, lgt_glb_lin)
@@ -72,7 +95,7 @@ def _train(model, optimizer, scheduler, checkpointer, epochs, train_loader,
 
 
 def train_classifiers(model, learning_rate, dataset, train_loader,
-                      test_loader, stat_tracker, checkpointer, log_dir, device):
+                      test_loader, stat_tracker, checkpointer, log_dir, device, amp):
     # retrain the evaluation classifiers using the trained feature encoder
     for mod in model.class_modules:
         # reset params in the evaluation classifiers
@@ -94,4 +117,4 @@ def train_classifiers(model, learning_rate, dataset, train_loader,
         epochs = 15
     # retrain the model
     _train(model, optimizer, scheduler, checkpointer, epochs, train_loader,
-           test_loader, stat_tracker, log_dir, device)
+           test_loader, stat_tracker, log_dir, device, amp)
